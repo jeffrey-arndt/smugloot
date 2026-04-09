@@ -473,15 +473,17 @@ class LootCog(commands.Cog):
 
     @app_commands.command(
         name="attendance-credit",
-        description="Grant a player attendance credit for the current week (officer)",
+        description="Grant a player attendance credit (defaults to most recent raid week)",
     )
     @app_commands.describe(
         raid_group="Raid group (e.g. Sunday, Tuesday, Wednesday)",
         player_name="Player to credit",
+        raid_date="Credit for this raid's week (defaults to most recent raid)",
     )
     @app_commands.autocomplete(raid_group=raid_group_autocomplete)
     async def attendance_credit(
         self, interaction: discord.Interaction, raid_group: str, player_name: str,
+        raid_date: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
 
@@ -499,7 +501,28 @@ class LootCog(commands.Cog):
             )
             return
 
-        week = datetime.now(timezone.utc).strftime("%Y-%W")
+        if raid_date:
+            # Derive the week from the provided date
+            try:
+                dt = datetime.strptime(raid_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except ValueError:
+                await interaction.followup.send(
+                    f"Invalid date format: **{raid_date}**. Use YYYY-MM-DD.", ephemeral=True,
+                )
+                return
+            week = dt.strftime("%Y-%W")
+            week_display = dt.strftime("%b %d, %Y")
+        else:
+            # Default to most recent raid's week
+            recent_raids = await self.bot.db.get_recent_raids(limit=1, group_id=group["id"])
+            if recent_raids:
+                dt = datetime.strptime(recent_raids[0]["raid_date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                week = dt.strftime("%Y-%W")
+                week_display = dt.strftime("%b %d, %Y")
+            else:
+                week = datetime.now(timezone.utc).strftime("%Y-%W")
+                week_display = "this week"
+
         inserted = await self.bot.db.insert_attendance_credit(
             player_id=player["id"],
             group_id=group["id"],
@@ -510,12 +533,12 @@ class LootCog(commands.Cog):
 
         if inserted:
             await interaction.followup.send(
-                f"**{player['name']}** granted attendance credit for this week ({raid_group}).",
+                f"**{player['name']}** granted attendance credit for week of {week_display} ({raid_group}).",
                 ephemeral=True,
             )
         else:
             await interaction.followup.send(
-                f"**{player['name']}** already has attendance credit for this week ({raid_group}).",
+                f"**{player['name']}** already has attendance credit for week of {week_display} ({raid_group}).",
                 ephemeral=True,
             )
 
@@ -529,6 +552,24 @@ class LootCog(commands.Cog):
         )
         rows = await cursor.fetchall()
         return [app_commands.Choice(name=row[0], value=row[0]) for row in rows]
+
+    @attendance_credit.autocomplete("raid_date")
+    async def att_credit_date_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        cursor = await self.bot.db.db.execute(
+            """
+            SELECT raid_date, title FROM raids
+            WHERE raid_date LIKE ? COLLATE NOCASE
+            ORDER BY raid_date DESC LIMIT 10
+            """,
+            (f"%{current}%",),
+        )
+        rows = await cursor.fetchall()
+        return [
+            app_commands.Choice(name=f"{row[0]} — {row[1]}", value=row[0])
+            for row in rows
+        ]
 
 
     # ── /mechanic-override ─────────────────────────────────────────────
