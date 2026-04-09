@@ -539,7 +539,7 @@ class LootCog(commands.Cog):
     )
     @app_commands.describe(
         raid_group="Raid group (e.g. Sunday, Tuesday, Wednesday)",
-        players="Player names, comma-separated (e.g. Gayori,Keegal,Nxxturne)",
+        players="Player names, comma-separated (e.g. Player1,Player2,Player3)",
         boss_name="Boss name (e.g. Magtheridon, High King Maulgar)",
         raid_date="Raid date YYYY-MM-DD (defaults to most recent raid)",
     )
@@ -758,7 +758,7 @@ class LootCog(commands.Cog):
     )
     @app_commands.describe(
         raid_group="Raid group (e.g. Sunday, Tuesday, Wednesday)",
-        players="Player names, comma-separated (e.g. Keegal,Gnosthunter)",
+        players="Player names, comma-separated (e.g. Player1,Player2)",
         item_name="Optional: show assignment score breakdown for this item",
     )
     @app_commands.autocomplete(raid_group=raid_group_autocomplete)
