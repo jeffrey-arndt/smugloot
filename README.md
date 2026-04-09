@@ -24,10 +24,11 @@ Your loot priority score is on a **0–10 scale**, calculated from four categori
 You earn 1 point per week attended, up to 4. This is the single biggest factor in your score.
 
 - Show up to raid = 1 point for that week
-- Miss a week but run it in a pug? Use `/pug-credit` with the WCL link to get credit
 - Attendance is tracked per raid group (Sunday, Tuesday, etc.) — no cross-group credit
 
-**How to maximize:** Show up every week. If you can't make it, pug the content and submit the log.
+**Pug Credit:** If you have a legitimate reason you can't make a scheduled raid (work, travel, etc.), you can request pug credit by running the content on your own and submitting the WarcraftLogs link via `/pug-credit`. **You must get prior approval from an officer before the raid you'll miss.** This is meant for occasional, unavoidable absences — not a way to skip guild raids and maintain attendance. Abuse of pug credit will result in it being revoked.
+
+**How to maximize:** Show up every week. If you know you'll miss a raid, communicate with an officer ahead of time and pug the content to maintain your attendance score.
 
 ### Performance (35%)
 
@@ -47,7 +48,7 @@ Your parse is averaged **per boss** across weeks, so one bad fight doesn't tank 
 
 **Tanks** are exempt from parse scoring — tank parses don't reflect performance the same way. Tanks are scored on attendance, utility, and consumables only.
 
-**Mechanic duty** (e.g. Mag clickers, warlock tanking Leo, mage tanking Krosh) — officers can flag your parse on a specific boss as mechanic duty. Your parse for that fight gets replaced with your average on other bosses + a small bonus, so you aren't penalized for doing the job.
+**Mechanic duty** — We recognize that certain raid assignments hurt your parse through no fault of your own (e.g. Mag clickers, warlock tanking Leo, mage tanking Krosh). Officers can flag your parse on a specific boss as mechanic duty using `/mechanic-override`. When flagged, your parse for that fight gets replaced with your average on other bosses + a small bonus. If you're assigned to the same mechanic job every week, the system uses your performance on the other bosses as the baseline — you will never be penalized for doing what the raid needs you to do. If you believe a mechanic assignment affected your parse and hasn't been accounted for, let an officer know.
 
 **How to maximize:** Play well consistently. One bad week won't ruin you, but don't coast either.
 
@@ -92,6 +93,10 @@ Priority is a **weight, not a gate**. A Rank 2 player with much better attendanc
 ### Loot Penalty
 
 Each LC item you receive applies a **-1.5 point penalty** to your score. This penalty decays linearly to 0 over 4 weeks. If you received an item 2 weeks ago, the remaining penalty is about -0.75. This ensures loot gets spread around without hard caps.
+
+### Your Data
+
+The bot tracks detailed week-over-week data for every raider including per-boss parses, consumable usage, attendance history, and score trends. Tools like `/compare` and `/loot-history` exist to provide full transparency into how scores are calculated. We are still deciding how much of this data will be directly accessible to raiders vs. available through an LC member, but the data is there and we are happy to walk through your numbers with you if you have questions about a loot decision.
 
 ---
 
