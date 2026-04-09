@@ -1,0 +1,16 @@
+[Unit]
+Description=SmugLoot Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=smugloot
+Group=smugloot
+WorkingDirectory=/opt/smugloot
+ExecStart=/opt/smugloot/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+EnvironmentFile=/opt/smugloot/.env
+
+[Install]
+WantedBy=multi-user.target

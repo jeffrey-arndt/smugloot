@@ -1,0 +1,10 @@
+.env
+node_modules/
+__pycache__/
+*.pyc
+venv/
+*.db
+raid_data_raw.json
+*.har
+*:Zone.Identifier
+.claude/
