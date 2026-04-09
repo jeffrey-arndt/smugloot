@@ -8,6 +8,8 @@ SmugLoot tracks raider performance across WarcraftLogs reports and generates dat
 
 ## For Raiders: How You Are Scored
 
+> **IMPORTANT:** SmugLoot is a **tool to assist** the Loot Council — it does not make loot decisions. The scores and rankings below are one input into the LC discussion, not the final word. The Loot Council reserves the right to make the final decision on all loot awards, taking into account factors that may not be captured by any automated system (raid composition needs, exceptional circumstances, long-term guild health, etc.). If you have questions about a specific loot decision, talk to an officer.
+
 Your loot priority score is on a **0–10 scale**, calculated from four categories:
 
 | Category | Weight | Max Points | What It Measures |
