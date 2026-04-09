@@ -184,11 +184,13 @@ class LootCog(commands.Cog):
         raid_group="Raid group (e.g. Sunday, Tuesday, Wednesday)",
         player_name="Player who received the item",
         item_name="Item name (e.g. Dragonspine Trophy)",
+        raid_date="Which raid this dropped in (defaults to most recent)",
     )
     @app_commands.autocomplete(raid_group=raid_group_autocomplete)
     async def award(
         self, interaction: discord.Interaction,
         raid_group: str, player_name: str, item_name: str,
+        raid_date: str | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
 
@@ -207,16 +209,34 @@ class LootCog(commands.Cog):
             )
             return
 
-        # Get most recent raid for context
-        recent_raids = await self.bot.db.get_recent_raids(limit=1, group_id=group["id"])
-        raid_id = recent_raids[0]["id"] if recent_raids else None
+        # Find the raid
+        if raid_date:
+            cursor = await self.bot.db.db.execute(
+                "SELECT * FROM raids WHERE group_id = ? AND raid_date = ?",
+                (group["id"], raid_date),
+            )
+            raid_row = await cursor.fetchone()
+            if not raid_row:
+                await interaction.followup.send(
+                    f"No raid found for **{raid_group}** on **{raid_date}**.",
+                    ephemeral=True,
+                )
+                return
+            raid = dict(raid_row)
+        else:
+            recent_raids = await self.bot.db.get_recent_raids(limit=1, group_id=group["id"])
+            if not recent_raids:
+                await interaction.followup.send("No raids found for this group.", ephemeral=True)
+                return
+            raid = recent_raids[0]
 
         await self.bot.db.insert_loot_history(
             player_id=player["id"],
             item_name=item_name,
             group_id=group["id"],
-            raid_id=raid_id,
+            raid_id=raid["id"],
             notes=f"Awarded by {interaction.user.display_name}",
+            awarded_at=raid["raid_date"],
         )
 
         # Show updated position
@@ -225,7 +245,8 @@ class LootCog(commands.Cog):
         penalty_str = f" (loot penalty: -{target.loot_penalty:.1f})" if target and target.loot_penalty > 0 else ""
 
         await interaction.followup.send(
-            f"Recorded: **{player['name']}** received **{item_name}**{penalty_str} ({raid_group})",
+            f"Recorded: **{player['name']}** received **{item_name}**{penalty_str} "
+            f"({raid_group}, raid {raid['raid_date']})",
             ephemeral=True,
         )
 
@@ -237,7 +258,7 @@ class LootCog(commands.Cog):
                 description=f"**{player['name']}** received **{item_name}**",
                 color=config.CLASS_COLORS.get(player["class"], 0x808080),
             )
-            embed.set_footer(text=f"Awarded by {interaction.user.display_name} | {raid_group}")
+            embed.set_footer(text=f"Awarded by {interaction.user.display_name} | {raid_group} | {raid['raid_date']}")
             await channel.send(embed=embed)
 
     @award.autocomplete("player_name")
@@ -267,6 +288,24 @@ class LootCog(commands.Cog):
         )
         rows = await cursor.fetchall()
         return [app_commands.Choice(name=row[0], value=row[0]) for row in rows]
+
+    @award.autocomplete("raid_date")
+    async def award_raid_date_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        cursor = await self.bot.db.db.execute(
+            """
+            SELECT raid_date, title FROM raids
+            WHERE raid_date LIKE ? COLLATE NOCASE
+            ORDER BY raid_date DESC LIMIT 10
+            """,
+            (f"%{current}%",),
+        )
+        rows = await cursor.fetchall()
+        return [
+            app_commands.Choice(name=f"{row[0]} — {row[1]}", value=row[0])
+            for row in rows
+        ]
 
     # ── /loot-history ───────────────────────────────────────────────────
 
@@ -614,6 +653,24 @@ class LootCog(commands.Cog):
             (f"%{current}%",),
         )
         return [app_commands.Choice(name=row[0], value=row[0]) for row in await cursor.fetchall()]
+
+    @mechanic_override.autocomplete("raid_date")
+    async def mechanic_raid_date_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        cursor = await self.bot.db.db.execute(
+            """
+            SELECT raid_date, title FROM raids
+            WHERE raid_date LIKE ? COLLATE NOCASE
+            ORDER BY raid_date DESC LIMIT 10
+            """,
+            (f"%{current}%",),
+        )
+        rows = await cursor.fetchall()
+        return [
+            app_commands.Choice(name=f"{row[0]} — {row[1]}", value=row[0])
+            for row in rows
+        ]
 
     # ── /attendance ──────────────────────────────────────────────────────
 

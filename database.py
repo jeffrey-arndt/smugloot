@@ -890,11 +890,18 @@ class Database:
     async def insert_loot_history(
         self, player_id: int, item_name: str, group_id: int,
         raid_id: int | None = None, notes: str = "",
+        awarded_at: str | None = None,
     ) -> int:
-        cursor = await self.db.execute(
-            "INSERT INTO loot_history (player_id, item_name, group_id, raid_id, notes) VALUES (?, ?, ?, ?, ?)",
-            (player_id, item_name, group_id, raid_id, notes),
-        )
+        if awarded_at:
+            cursor = await self.db.execute(
+                "INSERT INTO loot_history (player_id, item_name, group_id, raid_id, notes, awarded_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (player_id, item_name, group_id, raid_id, notes, awarded_at),
+            )
+        else:
+            cursor = await self.db.execute(
+                "INSERT INTO loot_history (player_id, item_name, group_id, raid_id, notes) VALUES (?, ?, ?, ?, ?)",
+                (player_id, item_name, group_id, raid_id, notes),
+            )
         await self.db.commit()
         return cursor.lastrowid
 
