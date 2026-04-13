@@ -94,15 +94,50 @@ class LootCog(commands.Cog):
             await interaction.followup.send("No player data yet. Import a raid log first.", ephemeral=True)
             return
 
-        text = format_player_scores(roster)
-        raid_count = await self.bot.db.get_raid_count(group["id"])
+        active_roster = [p for p in roster if p.attendance_weeks > 0]
+        hidden_count = len(roster) - len(active_roster)
 
-        embed = discord.Embed(
-            title=f"Loot Priority Scores — {raid_group} ({raid_count} raid(s))",
-            description=f"```\n{text}\n```",
-            color=discord.Color.purple(),
+        if not active_roster:
+            await interaction.followup.send(
+                f"No raiders with attendance in the last {config.ATTENDANCE_WEEKS} weeks.",
+                ephemeral=True,
+            )
+            return
+
+        text = format_player_scores(active_roster)
+        raid_count = await self.bot.db.get_raid_count(group["id"])
+        title = f"Loot Priority Scores — {raid_group} ({raid_count} raid(s))"
+        footer = (
+            f"Active core (≥1 raid in last {config.ATTENDANCE_WEEKS} weeks). "
+            f"Hidden: {hidden_count} inactive."
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Discord embed descriptions cap at 4096 chars. Chunk by lines if needed.
+        max_body = 4000
+        lines = text.split("\n")
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+        for line in lines:
+            if current_len + len(line) + 1 > max_body and current:
+                chunks.append("\n".join(current))
+                current = [line]
+                current_len = len(line) + 1
+            else:
+                current.append(line)
+                current_len += len(line) + 1
+        if current:
+            chunks.append("\n".join(current))
+
+        for i, chunk in enumerate(chunks):
+            embed = discord.Embed(
+                title=title if i == 0 else f"{title} (cont.)",
+                description=f"```\n{chunk}\n```",
+                color=discord.Color.purple(),
+            )
+            if i == len(chunks) - 1:
+                embed.set_footer(text=footer)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /assign ─────────────────────────────────────────────────────────
 
