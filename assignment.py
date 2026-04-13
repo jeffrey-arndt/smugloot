@@ -449,8 +449,9 @@ def build_watchlist(
         parse_series = [wp[w] for w in sorted(wp)]
         util_series = [wu[w] for w in sorted(wu)]
 
-        p_trend = _trend(parse_series)
-        u_trend = _trend(util_series, delta=0.3)
+        # Parse trend needs ≥3 data points and ≥8% drop to flag declining
+        p_trend = _trend(parse_series, delta=8.0) if len(parse_series) >= 3 else "insufficient"
+        u_trend = _trend(util_series, delta=0.5)  # kept for display only
 
         flags = []
         # Parse flags — tanks are exempt from parse judgment
@@ -459,14 +460,16 @@ def build_watchlist(
                 flags.append("LowParse")
             if p_trend == "declining":
                 flags.append("DecliningParse")
-            elif p_trend == "flat" and p.avg_parse_pct and p.avg_parse_pct < 65:
+            elif p_trend in ("flat", "insufficient") and p.avg_parse_pct and p.avg_parse_pct < 65:
                 flags.append("FlatParse")
 
         # Utility flags (applies to all)
+        # LowUtility: consistently under-performing
+        # InconsistentUtility: at least one weak week (≤2/4) but avg is mid-range
         if p.avg_utility and p.avg_utility < 2.5:
             flags.append("LowUtility")
-        if u_trend == "declining":
-            flags.append("DecliningUtility")
+        elif util_series and any(v <= 2 for v in util_series) and 2.5 <= p.avg_utility < 3.5:
+            flags.append("InconsistentUtility")
 
         if not flags:
             continue
@@ -489,8 +492,8 @@ _FLAG_ICONS = {
     "LowParse": "🔴",
     "DecliningParse": "🔴",
     "FlatParse": "🟡",
-    "LowUtility": "🟡",
-    "DecliningUtility": "🟡",
+    "LowUtility": "🔴",
+    "InconsistentUtility": "🟡",
 }
 
 
@@ -643,8 +646,8 @@ def format_watchlist_detail(
             "LowParse": "Parse average below 50% — significantly under-performing",
             "DecliningParse": "Parse trending down across the window",
             "FlatParse": "Parse is not improving and is below the 65% target",
-            "LowUtility": "Utility score averaging below 2.5/4",
-            "DecliningUtility": "Utility engagement declining across the window",
+            "LowUtility": "Utility averaging below 2.5/4 — consistently missing consumes/class-util/interrupts/potions",
+            "InconsistentUtility": "At least one week scored ≤2/4 — raider slips on consumes or utility some weeks",
         }
         for f in flags:
             lines.append(f"  - {f}: {flag_descriptions.get(f, '')}")
