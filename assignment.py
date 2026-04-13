@@ -520,11 +520,11 @@ def format_watchlist_overview(entries: list[WatchlistEntry], week_keys: list[str
 
         # Parse averages header — tanks omitted
         if p.role == "tank":
-            summary = f"util {p.avg_utility:.1f} {_TREND_ARROWS[e.util_trend]}  (tank — parse not graded)"
+            summary = f"util {p.avg_utility:.1f}  (tank — parse not graded)"
         else:
             summary = (
                 f"parse {p.avg_parse_pct:.0f}% {_TREND_ARROWS[e.parse_trend]}  "
-                f"util {p.avg_utility:.1f} {_TREND_ARROWS[e.util_trend]}"
+                f"util {p.avg_utility:.1f}"
             )
         lines.append(f"{p.name} ({p.role})  {summary}")
 
@@ -634,7 +634,6 @@ def format_watchlist_detail(
             detail = ", ".join(components) if components else "nothing scored"
             lines.append(f"  {label}: {total}/4  ({detail})")
         lines.append(f"  Average: {player.avg_utility:.2f}/4")
-        lines.append(f"  Trend: {util_trend.upper()}")
     lines.append("")
 
     # Flags
