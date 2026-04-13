@@ -12,20 +12,156 @@ from scoring import (
 from wcl_client import RaidData, extract_report_code
 
 
-class ApprovePublishView(discord.ui.View):
-    """View with Publish/Cancel buttons for officer review."""
+class MechanicOverrideModal(discord.ui.Modal, title="Mechanic Overrides"):
+    """Modal for entering per-boss mechanic overrides at upload time."""
 
-    def __init__(self, raid_data: RaidData, embeds: list[discord.Embed], bot, group_id: int):
-        super().__init__(timeout=300)
+    def __init__(self, parent_view: "ApprovePublishView", boss_names: list[str]):
+        super().__init__(timeout=600)
+        self.parent_view = parent_view
+        self.boss_names = boss_names
+
+        existing = parent_view.overrides or {}
+        lines = []
+        for boss in boss_names:
+            names = existing.get(boss)
+            if names is None:
+                lines.append(f"{boss}: ")
+            elif not names:
+                lines.append(f"{boss}: none")
+            else:
+                lines.append(f"{boss}: {','.join(names)}")
+        prefill = "\n".join(lines)
+
+        self.overrides_input = discord.ui.TextInput(
+            label="Per-boss overrides (one line per boss)",
+            style=discord.TextStyle.paragraph,
+            default=prefill,
+            required=True,
+            max_length=4000,
+            placeholder="Magtheridon: Bob,Alice\nKarathress: none",
+        )
+        self.add_item(self.overrides_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        text = self.overrides_input.value
+        # Build case-insensitive name resolver from the log's roster
+        valid_names = {p.name.lower(): p.name for p in self.parent_view.raid_data.players}
+
+        parsed: dict[str, list[str]] = {}
+        errors: list[str] = []
+        remaining = set(self.boss_names)
+
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if ":" not in line:
+                errors.append(f"Missing `:` in line: `{line}`")
+                continue
+            boss_part, value_part = line.split(":", 1)
+            boss = boss_part.strip()
+            value = value_part.strip()
+
+            # Match boss name case-insensitively against the log's bosses
+            canonical = next((b for b in self.boss_names if b.lower() == boss.lower()), None)
+            if canonical is None:
+                continue  # silently ignore unknown boss lines
+            remaining.discard(canonical)
+
+            if not value:
+                errors.append(f"**{canonical}**: line is blank — type `none` if no overrides")
+                continue
+            if value.lower() == "none":
+                parsed[canonical] = []
+                continue
+
+            names = [n.strip() for n in value.split(",") if n.strip()]
+            resolved: list[str] = []
+            for n in names:
+                key = n.lower()
+                if key in valid_names:
+                    resolved.append(valid_names[key])
+                else:
+                    errors.append(f"**{canonical}**: unknown player `{n}`")
+            parsed[canonical] = resolved
+
+        for boss in remaining:
+            errors.append(f"**{boss}**: missing — include `{boss}: <names>` or `{boss}: none`")
+
+        if errors:
+            await interaction.response.send_message(
+                "Override entry has errors:\n"
+                + "\n".join("• " + e for e in errors[:15])
+                + "\n\nClick *Set Mechanic Overrides* to retry.",
+                ephemeral=True,
+            )
+            return
+
+        self.parent_view.overrides = parsed
+        self.parent_view.refresh_buttons()
+        await interaction.response.edit_message(
+            content=self.parent_view.build_summary(),
+            view=self.parent_view,
+        )
+
+
+class ApprovePublishView(discord.ui.View):
+    """View with override-entry / Import / Cancel buttons for officer review."""
+
+    def __init__(self, raid_data: RaidData, bot, group_id: int, base_summary: str):
+        super().__init__(timeout=600)
         self.raid_data = raid_data
         self.bot = bot
         self.group_id = group_id
+        self.base_summary = base_summary
+        self.overrides: dict[str, list[str]] | None = None
+        self.refresh_buttons()
 
-    @discord.ui.button(label="Import", style=discord.ButtonStyle.green)
+    def refresh_buttons(self):
+        for child in self.children:
+            if getattr(child, "custom_id", None) == "import_btn":
+                if self.overrides is None:
+                    child.disabled = True
+                    child.label = "Import (set overrides first)"
+                else:
+                    total = sum(len(v) for v in self.overrides.values())
+                    child.disabled = False
+                    child.label = f"Import ({total} override{'s' if total != 1 else ''})"
+
+    def build_summary(self) -> str:
+        extra = ""
+        if self.overrides is None:
+            extra = "\n\nMechanic overrides: **not yet set** — click *Set Mechanic Overrides* to continue."
+        else:
+            lines = []
+            for boss, names in self.overrides.items():
+                if names:
+                    lines.append(f"  {boss}: {', '.join(names)}")
+                else:
+                    lines.append(f"  {boss}: (none)")
+            extra = "\n\nMechanic overrides:\n" + "\n".join(lines)
+        return self.base_summary + extra
+
+    @discord.ui.button(label="Set Mechanic Overrides", style=discord.ButtonStyle.primary)
+    async def set_overrides(self, interaction: discord.Interaction, button: discord.ui.Button):
+        kills = [b for b in self.raid_data.bosses if b.kill]
+        modal = MechanicOverrideModal(self, [b.name for b in kills])
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(
+        label="Import (set overrides first)",
+        style=discord.ButtonStyle.green,
+        disabled=True,
+        custom_id="import_btn",
+    )
     async def publish(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.overrides is None:
+            await interaction.response.send_message(
+                "Set mechanic overrides first.", ephemeral=True,
+            )
+            return
         await interaction.response.defer(ephemeral=True)
 
-        # Save to database
         try:
             await self._save_to_db(interaction.user.id)
         except Exception as e:
@@ -36,15 +172,16 @@ class ApprovePublishView(discord.ui.View):
 
         kills = [b for b in self.raid_data.bosses if b.kill]
         kill_names = ", ".join(b.name for b in kills)
+        override_total = sum(len(v) for v in self.overrides.values())
 
-        # Disable buttons and confirm
         for item in self.children:
             item.disabled = True
         await interaction.edit_original_response(
             content=(
                 f"Log imported successfully! "
                 f"**{len(kills)}** boss kill(s) ({kill_names}), "
-                f"**{len(self.raid_data.players)}** raiders saved."
+                f"**{len(self.raid_data.players)}** raiders, "
+                f"**{override_total}** mechanic override(s) saved."
             ),
             embeds=[],
             view=self,
@@ -84,6 +221,8 @@ class ApprovePublishView(discord.ui.View):
             imported_by=imported_by,
         )
 
+        name_to_id: dict[str, int] = {}
+
         # Upsert players and save attendance + performance
         for player in raid.players:
             player_id = await db.upsert_player(
@@ -91,6 +230,7 @@ class ApprovePublishView(discord.ui.View):
                 server=player.server,
                 player_class=player.player_class,
             )
+            name_to_id[player.name] = player_id
 
             await db.insert_attendance(
                 raid_id=raid_id,
@@ -146,6 +286,19 @@ class ApprovePublishView(discord.ui.View):
                     active_time_ms=0,
                     deaths=0,
                     parse_pct=boss_parse,
+                )
+
+        # Save mechanic overrides (overrides is always a dict here — Import guards it)
+        for boss_name, player_names in (self.overrides or {}).items():
+            for pname in player_names:
+                pid = name_to_id.get(pname)
+                if pid is None:
+                    continue  # shouldn't happen, modal validated names
+                await db.insert_mechanic_override(
+                    raid_id=raid_id,
+                    player_id=pid,
+                    boss_name=boss_name,
+                    created_by=imported_by,
                 )
 
 
@@ -226,18 +379,17 @@ class ParsingCog(commands.Cog):
         )
         kill_names = ", ".join(b.name for b in kills)
 
-        summary = (
+        base_summary = (
             f"**{raid_data.title}** — {raid_dt.strftime('%b %d, %Y')}\n"
             f"Zone: {raid_data.zone or 'Unknown'}\n"
             f"Boss kills: **{len(kills)}** ({kill_names})\n"
             f"Wipes: {raid_data.wipe_count}\n"
-            f"Raiders: **{len(raid_data.players)}**\n\n"
-            f"Click **Import** to save this log to the database."
+            f"Raiders: **{len(raid_data.players)}**"
         )
 
-        view = ApprovePublishView(raid_data, [], self.bot, group["id"])
+        view = ApprovePublishView(raid_data, self.bot, group["id"], base_summary)
         await interaction.followup.send(
-            content=summary,
+            content=view.build_summary(),
             view=view,
             ephemeral=True,
         )
