@@ -784,6 +784,47 @@ class Database:
         )
         return {row["player_id"]: round(row["avg_util"], 1) for row in await cursor.fetchall()}
 
+    async def get_all_weekly_parse_averages(
+        self, group_id: int, weeks: int = 4,
+    ) -> dict[int, dict[str, float]]:
+        """Returns {player_id: {week_str: avg_parse_pct}} from raid_performance."""
+        cursor = await self.db.execute(
+            """
+            SELECT rp.player_id, strftime('%Y-%W', r.raid_date) as week,
+                   AVG(rp.parse_pct) as avg_parse
+            FROM raid_performance rp
+            JOIN raids r ON r.id = rp.raid_id
+            WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
+              AND rp.parse_pct > 0
+            GROUP BY rp.player_id, week
+            """,
+            (group_id, -weeks * 7),
+        )
+        result: dict[int, dict[str, float]] = {}
+        for row in await cursor.fetchall():
+            result.setdefault(row["player_id"], {})[row["week"]] = round(row["avg_parse"], 1)
+        return result
+
+    async def get_all_weekly_utility_averages(
+        self, group_id: int, weeks: int = 4,
+    ) -> dict[int, dict[str, float]]:
+        """Returns {player_id: {week_str: avg_utility}} from utility_performance."""
+        cursor = await self.db.execute(
+            """
+            SELECT up.player_id, strftime('%Y-%W', r.raid_date) as week,
+                   AVG(up.utility_total) as avg_util
+            FROM utility_performance up
+            JOIN raids r ON r.id = up.raid_id
+            WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
+            GROUP BY up.player_id, week
+            """,
+            (group_id, -weeks * 7),
+        )
+        result: dict[int, dict[str, float]] = {}
+        for row in await cursor.fetchall():
+            result.setdefault(row["player_id"], {})[row["week"]] = round(row["avg_util"], 1)
+        return result
+
     async def get_player_weekly_boss_parses(
         self, player_id: int, group_id: int, weeks: int = 4,
     ) -> list[dict]:

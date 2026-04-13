@@ -396,3 +396,256 @@ def format_assignments(
         lines.append("")
 
     return "\n".join(lines)
+
+
+# ── Watchlist ───────────────────────────────────────────────────────────
+
+@dataclass
+class WatchlistEntry:
+    """A tenured raider with their weekly trend data and flags."""
+    player: RosterPlayer
+    weekly_parse: dict[str, float]    # week_str -> avg parse
+    weekly_util: dict[str, float]     # week_str -> avg utility
+    parse_trend: str                  # "improving", "flat", "declining", "insufficient"
+    util_trend: str
+    flags: list[str]
+
+
+def _trend(values: list[float], delta: float = 5.0) -> str:
+    """Classify a time series as improving / flat / declining.
+
+    Splits values in half (oldest first), compares means. Needs ≥2 points.
+    """
+    if len(values) < 2:
+        return "insufficient"
+    mid = len(values) // 2
+    first = values[:mid] if mid else values[:1]
+    second = values[mid:] if mid else values[1:]
+    if not first or not second:
+        return "insufficient"
+    diff = (sum(second) / len(second)) - (sum(first) / len(first))
+    if diff >= delta:
+        return "improving"
+    if diff <= -delta:
+        return "declining"
+    return "flat"
+
+
+def build_watchlist(
+    roster: list[RosterPlayer],
+    weekly_parse_map: dict[int, dict[str, float]],
+    weekly_util_map: dict[int, dict[str, float]],
+    min_tenure: int = 3,
+) -> list[WatchlistEntry]:
+    """Build watchlist entries for tenured raiders with ≥1 concerning flag."""
+    entries = []
+    for p in roster:
+        if p.attendance_weeks < min_tenure:
+            continue
+
+        wp = weekly_parse_map.get(p.player_id, {})
+        wu = weekly_util_map.get(p.player_id, {})
+
+        parse_series = [wp[w] for w in sorted(wp)]
+        util_series = [wu[w] for w in sorted(wu)]
+
+        p_trend = _trend(parse_series)
+        u_trend = _trend(util_series, delta=0.3)
+
+        flags = []
+        # Parse flags — tanks are exempt from parse judgment
+        if p.role != "tank":
+            if p.avg_parse_pct and p.avg_parse_pct < 50:
+                flags.append("LowParse")
+            if p_trend == "declining":
+                flags.append("DecliningParse")
+            elif p_trend == "flat" and p.avg_parse_pct and p.avg_parse_pct < 65:
+                flags.append("FlatParse")
+
+        # Utility flags (applies to all)
+        if p.avg_utility and p.avg_utility < 2.5:
+            flags.append("LowUtility")
+        if u_trend == "declining":
+            flags.append("DecliningUtility")
+
+        if not flags:
+            continue
+
+        entries.append(WatchlistEntry(
+            player=p,
+            weekly_parse=wp,
+            weekly_util=wu,
+            parse_trend=p_trend,
+            util_trend=u_trend,
+            flags=flags,
+        ))
+
+    # Sort: most flags first, then lowest composite
+    entries.sort(key=lambda e: (-len(e.flags), e.player.composite_score))
+    return entries
+
+
+_FLAG_ICONS = {
+    "LowParse": "🔴",
+    "DecliningParse": "🔴",
+    "FlatParse": "🟡",
+    "LowUtility": "🟡",
+    "DecliningUtility": "🟡",
+}
+
+
+def format_watchlist_overview(entries: list[WatchlistEntry], week_keys: list[str]) -> str:
+    """Format the watchlist overview as a compact table.
+
+    week_keys: ordered list of week strings (oldest first) for column headers.
+    """
+    if not entries:
+        return "No tenured raiders flagged. Good work all around."
+
+    # Column widths for week cells
+    pcol = 4  # parse cell width ("99")
+    ucol = 4  # util cell width ("2.5")
+
+    week_labels = [f"W{i+1}" for i in range(len(week_keys))]
+    parse_hdr = " ".join(f"{w:>{pcol}}" for w in week_labels)
+    util_hdr = " ".join(f"{w:>{ucol}}" for w in week_labels)
+
+    parse_width = len(parse_hdr)
+    util_width = len(util_hdr)
+
+    lines = []
+    header = (
+        f"{'Name':<14} {'Role':<5} "
+        f"{'Parse':<{parse_width}}  "
+        f"{'Util':<{util_width}}  Flags"
+    )
+    sub = (
+        f"{'':<14} {'':<5} "
+        f"{parse_hdr:<{parse_width}}  "
+        f"{util_hdr:<{util_width}}"
+    )
+    lines.append(header)
+    lines.append(sub)
+    lines.append("-" * max(len(header), len(sub)))
+
+    for e in entries:
+        p = e.player
+        parse_vals = " ".join(
+            f"{int(round(e.weekly_parse[w])):>{pcol}}" if w in e.weekly_parse else f"{'-':>{pcol}}"
+            for w in week_keys
+        )
+        util_vals = " ".join(
+            f"{e.weekly_util[w]:>{ucol}.1f}" if w in e.weekly_util else f"{'-':>{ucol}}"
+            for w in week_keys
+        )
+        flag_str = " ".join(f"{_FLAG_ICONS.get(f, '•')}{f}" for f in e.flags)
+        lines.append(
+            f"{p.name:<14} {p.role:<5} "
+            f"{parse_vals:<{parse_width}}  "
+            f"{util_vals:<{util_width}}  {flag_str}"
+        )
+
+    return "\n".join(lines)
+
+
+def format_watchlist_detail(
+    player: RosterPlayer,
+    raid_group: str,
+    weekly_parse: dict[str, float],
+    weekly_util_rows: list[dict],
+    week_keys: list[str],
+    flags: list[str],
+    parse_trend: str,
+    util_trend: str,
+) -> str:
+    """Format a single-player watchlist report in plain text for DM copy-paste.
+
+    weekly_util_rows: output of db.get_player_weekly_utility (has per-component breakdown).
+    """
+    lines = []
+    lines.append(f"=== Performance Review: {player.name} ({player.spec} {player.player_class}) ===")
+    lines.append(f"Raid group: {raid_group}")
+    lines.append(f"Window: last {len(week_keys)} weeks")
+    lines.append("")
+    lines.append(f"Attendance: {player.attendance_weeks}/{len(week_keys)} weeks")
+    if player.weekly_attendance and week_keys:
+        att_marks = []
+        for i, w in enumerate(week_keys):
+            mark = player.weekly_attendance.get(w, "")
+            if mark == "raid":
+                att_marks.append(f"W{i+1}:YES")
+            elif mark == "pug":
+                att_marks.append(f"W{i+1}:pug")
+            elif mark == "manual":
+                att_marks.append(f"W{i+1}:credit")
+            else:
+                att_marks.append(f"W{i+1}:no")
+        lines.append(f"  {', '.join(att_marks)}")
+    lines.append("")
+
+    # Parse by week
+    lines.append("Parse averages by week:")
+    if player.role == "tank":
+        lines.append("  (tank — parse not graded)")
+    elif not weekly_parse:
+        lines.append("  (no parse data in window)")
+    else:
+        for i, w in enumerate(week_keys):
+            val = weekly_parse.get(w)
+            label = f"W{i+1}"
+            if val is None:
+                lines.append(f"  {label}: (no raid)")
+            else:
+                lines.append(f"  {label}: {val:.0f}%")
+        lines.append(f"  Average: {player.avg_parse_pct:.1f}%")
+        lines.append(f"  Trend: {parse_trend.upper()}")
+    lines.append("")
+
+    # Utility by week with breakdown
+    lines.append("Utility by week (max 4: consumes + class util + interrupts + potions):")
+    if not weekly_util_rows:
+        lines.append("  (no utility data in window)")
+    else:
+        # Map weekly_util_rows by week for aligned display
+        util_by_week: dict[str, dict] = {}
+        for row in weekly_util_rows:
+            util_by_week[row["week"]] = row
+
+        for i, w in enumerate(week_keys):
+            label = f"W{i+1}"
+            row = util_by_week.get(w)
+            if not row:
+                lines.append(f"  {label}: (no raid)")
+                continue
+            total = row.get("utility_total", 0)
+            components = []
+            if row.get("has_flask_or_elixirs") or row.get("has_food_buff") or row.get("has_weapon_buff"):
+                components.append("consumes")
+            if row.get("has_class_utility"):
+                components.append("class-util")
+            if row.get("interrupts"):
+                components.append(f"{row['interrupts']} interrupts")
+            if row.get("potion_score"):
+                components.append(f"potions {row['potion_score']:.1f}")
+            detail = ", ".join(components) if components else "nothing scored"
+            lines.append(f"  {label}: {total}/4  ({detail})")
+        lines.append(f"  Average: {player.avg_utility:.2f}/4")
+        lines.append(f"  Trend: {util_trend.upper()}")
+    lines.append("")
+
+    # Flags
+    lines.append("Flags:")
+    if not flags:
+        lines.append("  (none)")
+    else:
+        flag_descriptions = {
+            "LowParse": "Parse average below 50% — significantly under-performing",
+            "DecliningParse": "Parse trending down across the window",
+            "FlatParse": "Parse is not improving and is below the 65% target",
+            "LowUtility": "Utility score averaging below 2.5/4",
+            "DecliningUtility": "Utility engagement declining across the window",
+        }
+        for f in flags:
+            lines.append(f"  - {f}: {flag_descriptions.get(f, '')}")
+
+    return "\n".join(lines)

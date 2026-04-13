@@ -20,6 +20,7 @@ from assignment import (
     RosterPlayer, compute_composite, compute_loot_penalty,
     priority_score_for_rank, generate_assignments,
     format_player_scores, format_assignments,
+    build_watchlist, format_watchlist_overview, format_watchlist_detail,
 )
 from loot_priority import SPEC_ALIAS_MAP
 
@@ -138,6 +139,137 @@ class LootCog(commands.Cog):
             if i == len(chunks) - 1:
                 embed.set_footer(text=footer)
             await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ── /watchlist ──────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="watchlist",
+        description="Flag tenured raiders who are underperforming or not improving",
+    )
+    @app_commands.describe(
+        raid_group="Raid group (e.g. Sunday, Tuesday, Wednesday)",
+        player_name="Optional: show copy-paste DM report for a single raider",
+    )
+    @app_commands.autocomplete(raid_group=raid_group_autocomplete)
+    async def watchlist(
+        self,
+        interaction: discord.Interaction,
+        raid_group: str,
+        player_name: str | None = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        group = await self.bot.db.get_raid_group_by_name(raid_group)
+        if not group:
+            await interaction.followup.send(
+                f"Unknown raid group: **{raid_group}**", ephemeral=True,
+            )
+            return
+
+        roster = await _build_roster(self.bot.db, group["id"])
+        if not roster:
+            await interaction.followup.send(
+                "No player data yet. Import a raid log first.", ephemeral=True,
+            )
+            return
+
+        weeks = config.ATTENDANCE_WEEKS
+        weekly_parse_map = await self.bot.db.get_all_weekly_parse_averages(group["id"], weeks=weeks)
+        weekly_util_map = await self.bot.db.get_all_weekly_utility_averages(group["id"], weeks=weeks)
+        recent = await self.bot.db.get_recent_weeks(group["id"], weeks=weeks)
+        week_keys = sorted(recent)  # oldest first
+
+        # Detail mode: single-player DM-ready report
+        if player_name:
+            target = next(
+                (p for p in roster if p.name.lower() == player_name.lower()),
+                None,
+            )
+            if not target:
+                await interaction.followup.send(
+                    f"No raider named **{player_name}** in {raid_group}.", ephemeral=True,
+                )
+                return
+
+            # Build entry just for this player to reuse flag logic
+            entries = build_watchlist(
+                [target],
+                weekly_parse_map,
+                weekly_util_map,
+                min_tenure=1,  # relax tenure when explicitly asking for one player
+            )
+            flags = entries[0].flags if entries else []
+            parse_trend = entries[0].parse_trend if entries else "insufficient"
+            util_trend = entries[0].util_trend if entries else "insufficient"
+
+            util_rows = await self.bot.db.get_player_weekly_utility(
+                target.player_id, group["id"], weeks=weeks,
+            )
+
+            text = format_watchlist_detail(
+                player=target,
+                raid_group=raid_group,
+                weekly_parse=weekly_parse_map.get(target.player_id, {}),
+                weekly_util_rows=util_rows,
+                week_keys=week_keys,
+                flags=flags,
+                parse_trend=parse_trend,
+                util_trend=util_trend,
+            )
+
+            # Plain message with code block — easy to select and copy into a DM
+            body = f"```\n{text}\n```"
+            if len(body) > 1990:
+                body = f"```\n{text[:1980]}\n...\n```"
+            await interaction.followup.send(body, ephemeral=True)
+            return
+
+        # Overview mode: all tenured raiders with flags
+        entries = build_watchlist(roster, weekly_parse_map, weekly_util_map)
+        text = format_watchlist_overview(entries, week_keys)
+
+        title = f"Watchlist — {raid_group}"
+        footer = (
+            f"Tenured raiders (≥3 of last {weeks} weeks) with concerns. "
+            f"Run /watchlist <player> for a DM-ready report."
+        )
+
+        max_body = 4000
+        lines = text.split("\n")
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+        for line in lines:
+            if current_len + len(line) + 1 > max_body and current:
+                chunks.append("\n".join(current))
+                current = [line]
+                current_len = len(line) + 1
+            else:
+                current.append(line)
+                current_len += len(line) + 1
+        if current:
+            chunks.append("\n".join(current))
+
+        for i, chunk in enumerate(chunks):
+            embed = discord.Embed(
+                title=title if i == 0 else f"{title} (cont.)",
+                description=f"```\n{chunk}\n```",
+                color=discord.Color.orange(),
+            )
+            if i == len(chunks) - 1:
+                embed.set_footer(text=footer)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @watchlist.autocomplete("player_name")
+    async def watchlist_player_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        cursor = await self.bot.db.db.execute(
+            "SELECT name FROM players WHERE name LIKE ? COLLATE NOCASE ORDER BY name LIMIT 25",
+            (f"%{current}%",),
+        )
+        rows = await cursor.fetchall()
+        return [app_commands.Choice(name=r["name"], value=r["name"]) for r in rows]
 
     # ── /assign ─────────────────────────────────────────────────────────
 
