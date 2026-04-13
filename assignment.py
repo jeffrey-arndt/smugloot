@@ -494,58 +494,59 @@ _FLAG_ICONS = {
 }
 
 
-def format_watchlist_overview(entries: list[WatchlistEntry], week_keys: list[str]) -> str:
-    """Format the watchlist overview as a compact table.
+_TREND_ARROWS = {
+    "improving": "↗",
+    "declining": "↘",
+    "flat": "→",
+    "insufficient": "·",
+}
 
-    week_keys: ordered list of week strings (oldest first) for column headers.
-    """
+
+def format_watchlist_overview(entries: list[WatchlistEntry], week_keys: list[str]) -> str:
+    """Format the watchlist as a stack of per-raider cards for quick scanning."""
     if not entries:
         return "No tenured raiders flagged. Good work all around."
 
-    # Column widths for week cells
-    pcol = 4  # parse cell width ("99")
-    ucol = 4  # util cell width ("2.5")
-
-    week_labels = [f"W{i+1}" for i in range(len(week_keys))]
-    parse_hdr = " ".join(f"{w:>{pcol}}" for w in week_labels)
-    util_hdr = " ".join(f"{w:>{ucol}}" for w in week_labels)
-
-    parse_width = len(parse_hdr)
-    util_width = len(util_hdr)
-
     lines = []
-    header = (
-        f"{'Name':<14} {'Role':<5} "
-        f"{'Parse':<{parse_width}}  "
-        f"{'Util':<{util_width}}  Flags"
-    )
-    sub = (
-        f"{'':<14} {'':<5} "
-        f"{parse_hdr:<{parse_width}}  "
-        f"{util_hdr:<{util_width}}"
-    )
-    lines.append(header)
-    lines.append(sub)
-    lines.append("-" * max(len(header), len(sub)))
+    if week_keys:
+        lines.append(f"Window: W1 (oldest) → W{len(week_keys)} (newest)")
+        lines.append("")
 
     for e in entries:
         p = e.player
-        parse_vals = " ".join(
-            f"{int(round(e.weekly_parse[w])):>{pcol}}" if w in e.weekly_parse else f"{'-':>{pcol}}"
-            for w in week_keys
-        )
-        util_vals = " ".join(
-            f"{e.weekly_util[w]:>{ucol}.1f}" if w in e.weekly_util else f"{'-':>{ucol}}"
-            for w in week_keys
-        )
-        flag_str = " ".join(f"{_FLAG_ICONS.get(f, '•')}{f}" for f in e.flags)
-        lines.append(
-            f"{p.name:<14} {p.role:<5} "
-            f"{parse_vals:<{parse_width}}  "
-            f"{util_vals:<{util_width}}  {flag_str}"
-        )
 
-    return "\n".join(lines)
+        # Parse averages header — tanks omitted
+        if p.role == "tank":
+            summary = f"util {p.avg_utility:.1f} {_TREND_ARROWS[e.util_trend]}  (tank — parse not graded)"
+        else:
+            summary = (
+                f"parse {p.avg_parse_pct:.0f}% {_TREND_ARROWS[e.parse_trend]}  "
+                f"util {p.avg_utility:.1f} {_TREND_ARROWS[e.util_trend]}"
+            )
+        lines.append(f"{p.name} ({p.role})  {summary}")
+
+        # Parse row with arrow-separated weekly values
+        if p.role != "tank":
+            parse_cells = [
+                f"{int(round(e.weekly_parse[w])):>2}" if w in e.weekly_parse else " —"
+                for w in week_keys
+            ]
+            lines.append("  Parse  " + "  →  ".join(parse_cells))
+
+        # Util row
+        util_cells = [
+            f"{e.weekly_util[w]:.1f}" if w in e.weekly_util else " — "
+            for w in week_keys
+        ]
+        lines.append("  Util   " + "  →  ".join(util_cells))
+
+        # Flag line
+        flag_str = "   ".join(f"{_FLAG_ICONS.get(f, '•')} {f}" for f in e.flags)
+        lines.append(f"  {flag_str}")
+
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
 def format_watchlist_detail(
