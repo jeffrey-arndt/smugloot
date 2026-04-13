@@ -436,8 +436,15 @@ def build_watchlist(
     weekly_parse_map: dict[int, dict[str, float]],
     weekly_util_map: dict[int, dict[str, float]],
     min_tenure: int = 3,
+    require_flags: bool = True,
 ) -> list[WatchlistEntry]:
-    """Build watchlist entries for tenured raiders with ≥1 concerning flag."""
+    """Build watchlist entries for tenured raiders.
+
+    By default only returns entries with ≥1 concerning flag. Pass
+    ``require_flags=False`` to get an entry for every tenured raider
+    (used by the single-player detail view, which still wants the
+    computed trends even when the raider is clean).
+    """
     entries = []
     for p in roster:
         if p.attendance_weeks < min_tenure:
@@ -471,7 +478,7 @@ def build_watchlist(
         elif util_series and any(v <= 2 for v in util_series) and 2.5 <= p.avg_utility < 3.5:
             flags.append("InconsistentUtility")
 
-        if not flags:
+        if require_flags and not flags:
             continue
 
         entries.append(WatchlistEntry(
@@ -587,6 +594,14 @@ def format_watchlist_detail(
         lines.append(f"  {', '.join(att_marks)}")
     lines.append("")
 
+    def _absence_label(week: str) -> str:
+        mark = (player.weekly_attendance or {}).get(week, "")
+        if mark == "pug":
+            return "(pug credit)"
+        if mark == "manual":
+            return "(manual credit)"
+        return "(absent)"
+
     # Parse by week
     lines.append("Parse averages by week:")
     if player.role == "tank":
@@ -598,7 +613,7 @@ def format_watchlist_detail(
             val = weekly_parse.get(w)
             label = f"W{i+1}"
             if val is None:
-                lines.append(f"  {label}: (no raid)")
+                lines.append(f"  {label}: {_absence_label(w)}")
             else:
                 lines.append(f"  {label}: {val:.0f}%")
         lines.append(f"  Average: {player.avg_parse_pct:.1f}%")
@@ -619,7 +634,7 @@ def format_watchlist_detail(
             label = f"W{i+1}"
             row = util_by_week.get(w)
             if not row:
-                lines.append(f"  {label}: (no raid)")
+                lines.append(f"  {label}: {_absence_label(w)}")
                 continue
             total = row.get("utility_total", 0)
             components = []

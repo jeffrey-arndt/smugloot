@@ -197,6 +197,7 @@ class LootCog(commands.Cog):
                 weekly_parse_map,
                 weekly_util_map,
                 min_tenure=1,  # relax tenure when explicitly asking for one player
+                require_flags=False,  # show trend/flags even when raider is clean
             )
             flags = entries[0].flags if entries else []
             parse_trend = entries[0].parse_trend if entries else "insufficient"
