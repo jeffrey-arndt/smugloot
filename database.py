@@ -552,7 +552,7 @@ class Database:
         cursor = await self.db.execute(
             f"""
             SELECT COUNT(DISTINCT week) as weeks_present FROM (
-                SELECT strftime('%Y-%W', r.raid_date) as week
+                SELECT strftime('%Y-%W', r.raid_date, '-1 day') as week
                 FROM attendance a
                 JOIN raids r ON r.id = a.raid_id
                 WHERE a.player_id IN ({placeholders}) AND r.group_id = ?
@@ -579,7 +579,7 @@ class Database:
             """
             SELECT raider_id, COUNT(DISTINCT week) as weeks_present FROM (
                 SELECT COALESCE(p.main_id, p.id) as raider_id,
-                       strftime('%Y-%W', r.raid_date) as week
+                       strftime('%Y-%W', r.raid_date, '-1 day') as week
                 FROM attendance a
                 JOIN players p ON p.id = a.player_id
                 JOIN raids r ON r.id = a.raid_id
@@ -612,7 +612,7 @@ class Database:
         cursor = await self.db.execute(
             """
             SELECT COALESCE(p.main_id, p.id) as raider_id,
-                   strftime('%Y-%W', r.raid_date) as week
+                   strftime('%Y-%W', r.raid_date, '-1 day') as week
             FROM attendance a
             JOIN players p ON p.id = a.player_id
             JOIN raids r ON r.id = a.raid_id
@@ -645,7 +645,7 @@ class Database:
         """Get the distinct week strings for the last N weeks of raids."""
         cursor = await self.db.execute(
             """
-            SELECT DISTINCT strftime('%Y-%W', r.raid_date) as week
+            SELECT DISTINCT strftime('%Y-%W', r.raid_date, '-1 day') as week
             FROM raids r
             WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
             ORDER BY week DESC
@@ -655,11 +655,12 @@ class Database:
         weeks_list = [row["week"] for row in await cursor.fetchall()]
         # If we have fewer raid weeks than the window, pad with calendar weeks
         if len(weeks_list) < weeks:
+            import config as cfg
             from datetime import datetime, timedelta, timezone
             now = datetime.now(timezone.utc)
             for i in range(weeks):
                 dt = now - timedelta(weeks=i)
-                wk = dt.strftime("%Y-%W")
+                wk = cfg.lockout_week(dt)
                 if wk not in weeks_list:
                     weeks_list.append(wk)
             weeks_list = sorted(set(weeks_list), reverse=True)[:weeks]
@@ -790,7 +791,7 @@ class Database:
         """Returns {player_id: {week_str: avg_parse_pct}} from raid_performance."""
         cursor = await self.db.execute(
             """
-            SELECT rp.player_id, strftime('%Y-%W', r.raid_date) as week,
+            SELECT rp.player_id, strftime('%Y-%W', r.raid_date, '-1 day') as week,
                    AVG(rp.parse_pct) as avg_parse
             FROM raid_performance rp
             JOIN raids r ON r.id = rp.raid_id
@@ -811,7 +812,7 @@ class Database:
         """Returns {player_id: {week_str: avg_utility}} from utility_performance."""
         cursor = await self.db.execute(
             """
-            SELECT up.player_id, strftime('%Y-%W', r.raid_date) as week,
+            SELECT up.player_id, strftime('%Y-%W', r.raid_date, '-1 day') as week,
                    AVG(up.utility_total) as avg_util
             FROM utility_performance up
             JOIN raids r ON r.id = up.raid_id
@@ -834,7 +835,7 @@ class Database:
         """
         cursor = await self.db.execute(
             """
-            SELECT strftime('%Y-%W', r.raid_date) as week, r.raid_date,
+            SELECT strftime('%Y-%W', r.raid_date, '-1 day') as week, r.raid_date,
                    bp.boss_name, bp.parse_pct
             FROM boss_performance bp
             JOIN raids r ON r.id = bp.raid_id
@@ -856,7 +857,7 @@ class Database:
         """
         cursor = await self.db.execute(
             """
-            SELECT strftime('%Y-%W', r.raid_date) as week, r.raid_date,
+            SELECT strftime('%Y-%W', r.raid_date, '-1 day') as week, r.raid_date,
                    up.has_flask_or_elixirs, up.has_food_buff, up.has_weapon_buff,
                    up.has_class_utility, up.interrupts, up.utility_total, up.potion_score
             FROM utility_performance up
@@ -878,7 +879,7 @@ class Database:
         """
         cursor = await self.db.execute(
             """
-            SELECT strftime('%Y-%W', r.raid_date) as week, r.raid_date,
+            SELECT strftime('%Y-%W', r.raid_date, '-1 day') as week, r.raid_date,
                    rp.parse_pct
             FROM raid_performance rp
             JOIN raids r ON r.id = rp.raid_id

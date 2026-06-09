@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
@@ -37,6 +38,21 @@ SCORE_MAX = 10.0
 ATTENDANCE_MAX = 4       # Max attendance points (1 per week)
 PERFORMANCE_MAX = 7      # Gold parse bracket
 UTILITY_MAX = 4          # Consumables + class utility + interrupts + potions
+
+# ─── Raid lockout week ────────────────────────────────────────────────────
+# WoW Classic US weekly reset is Tuesday. Buckets are aligned to the lockout,
+# NOT the default Monday-start calendar week (`%W`), so a Monday-night raid
+# groups with the prior week instead of collapsing into the upcoming Tuesday
+# reset. SQLite `%W` starts weeks on Monday; subtracting one day shifts the
+# boundary to Tuesday. Keep WEEK_SQL_MODIFIER in sync with WEEK_RESET_SHIFT_DAYS.
+WEEK_RESET_SHIFT_DAYS = 1       # days to subtract before %W → Tuesday-start week
+WEEK_SQL_MODIFIER = "-1 day"    # SQLite date() modifier equivalent of the shift
+
+
+def lockout_week(dt: datetime) -> str:
+    """Return the `%Y-%W` week key aligned to the Tuesday raid reset."""
+    return (dt - timedelta(days=WEEK_RESET_SHIFT_DAYS)).strftime("%Y-%W")
+
 
 # ─── Attendance ───────────────────────────────────────────────────────────
 ATTENDANCE_WEEKS = 4     # Look-back window in calendar weeks

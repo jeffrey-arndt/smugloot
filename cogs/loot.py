@@ -587,9 +587,9 @@ class LootCog(commands.Cog):
             )
             return
 
-        # Determine the week from the raid date
+        # Determine the lockout week from the raid date (Tuesday reset)
         raid_dt = datetime.fromtimestamp(start_time / 1000, tz=timezone.utc)
-        week = raid_dt.strftime("%Y-%W")
+        week = config.lockout_week(raid_dt)
 
         # Match pug roster against known guild players
         credited = []
@@ -678,17 +678,17 @@ class LootCog(commands.Cog):
                     f"Invalid date format: **{raid_date}**. Use YYYY-MM-DD.", ephemeral=True,
                 )
                 return
-            week = dt.strftime("%Y-%W")
+            week = config.lockout_week(dt)
             week_display = dt.strftime("%b %d, %Y")
         else:
             # Default to most recent raid's week
             recent_raids = await self.bot.db.get_recent_raids(limit=1, group_id=group["id"])
             if recent_raids:
                 dt = datetime.strptime(recent_raids[0]["raid_date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                week = dt.strftime("%Y-%W")
+                week = config.lockout_week(dt)
                 week_display = dt.strftime("%b %d, %Y")
             else:
-                week = datetime.now(timezone.utc).strftime("%Y-%W")
+                week = config.lockout_week(datetime.now(timezone.utc))
                 week_display = "this week"
 
         inserted = await self.bot.db.insert_attendance_credit(
