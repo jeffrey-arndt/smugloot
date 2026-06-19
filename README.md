@@ -2,7 +2,7 @@
 
 Loot council automation bot for **\<smug\>** — WoW Classic Fresh TBC.
 
-SmugLoot tracks raider performance across WarcraftLogs reports and generates data-driven loot priority rankings. Every LC item decision is backed by attendance, parse performance, consumable usage, and utility contribution — averaged over a 4-week rolling window.
+SmugLoot tracks raider performance across WarcraftLogs reports and generates data-driven loot priority rankings. Every LC item decision is backed by attendance, parse performance, consumable usage, and utility contribution — averaged over your **four most recent raids**.
 
 ---
 
@@ -14,16 +14,17 @@ Your loot priority score is on a **0–10 scale**, calculated from four categori
 
 | Category | Weight | Max Points | What It Measures |
 |---|---|---|---|
-| **Attendance** | 40% | 4 | How many of the last 4 weeks you attended |
-| **Performance** | 35% | 7 | Your WarcraftLogs parse % (averaged over 4 weeks) |
+| **Attendance** | 40% | 4 | How many of your last 4 raids you attended |
+| **Performance** | 35% | 7 | Your WarcraftLogs parse % (averaged over your last 4 raids) |
 | **Utility** | 15% | 4 | Consumables, class utility, interrupts, potions |
 | **Item Priority** | 10% | 1 | Your spec's rank on the item's priority chain |
 
 ### Attendance (40%)
 
-You earn 1 point per week attended, up to 4. This is the single biggest factor in your score.
+You earn 1 point per raid attended, up to 4. This is the single biggest factor in your score.
 
 - Show up to raid = 1 point for that week
+- The window is your raid group's **4 most recent raids**, not the last 4 calendar weeks — an off-week where the group didn't raid never counts against you, and being present at 4 of 4 raids is a perfect score
 - Attendance is tracked per raid group (Sunday, Tuesday, etc.) — no cross-group credit
 
 **Pug Credit:** If you have a legitimate reason you can't make a scheduled raid (work, travel, etc.), you can request pug credit by running the content on your own and submitting the WarcraftLogs link via `/pug-credit`. **You must get prior approval from an officer before the raid you'll miss.** This is meant for occasional, unavoidable absences — not a way to skip guild raids and maintain attendance. Abuse of pug credit will result in it being revoked.
@@ -65,11 +66,11 @@ Four sub-checks, each worth 1 point (max 4):
 - Warriors: Sunder Armor, Demo Shout, or Thunder Clap
 - Warlocks: Curse of Elements, Curse of Recklessness, Curse of Doom, or Banish
 - Druids: Faerie Fire or Innervate
-- Priests: Vampiric Touch or Power Infusion
+- Priests (Shadow/Disc): Vampiric Touch or Power Infusion
 - Paladins: Judgement/Seal of Light or Wisdom, BoP, or BoF
 - Hunters: Misdirection
 - Rogues: Expose Armor
-- Mages/Shamans: Auto-pass (shared duties, not individually trackable)
+- Holy Priests, Mages, Shamans: Auto-pass (their utility is their core role or a shared duty, not individually trackable)
 
 **3. Interrupts** — If your class can interrupt (Warrior, Rogue, Shaman, Mage), you need at least 1 interrupt per raid. Other classes auto-pass.
 
@@ -106,10 +107,11 @@ The bot tracks detailed week-over-week data for every raider including per-boss 
 
 | Command | Purpose |
 |---|---|
-| `/parse-log` | Import a WCL report. Shows a confirmation (date, bosses, player count) with an Import button. |
+| `/parse-log` | Import a WCL report. Shows a confirmation (date, bosses, player count). Before Import unlocks you must set per-boss mechanic duty: click **Set Mechanic Overrides** to enter it, or **No Overrides** to skip in one click. |
 | `/assign <item>` | Pull up the top 5 candidates for an item. Shows per-week attendance, parse avg, utility, loot penalty, and priority rank — everything you need for a quick LC call. |
-| `/award <player> <item>` | Record a loot award. Applies the -1.5 loot penalty and posts to the public channel. |
-| `/mechanic-override <players> <boss>` | Flag mechanic duty for one or more players (comma-separated). Their parse on that boss gets replaced with their average + bonus. Defaults to most recent raid, or specify `raid_date:YYYY-MM-DD`. |
+| `/award <player> <item>` | Record a loot award. Applies the -1.5 loot penalty and posts to the public channel. Optionally pass `raid_date:` to attribute it to a specific raid. |
+| `/unaward <player> <item>` | Reverse an award made in error. Deletes the most recent matching award (re-run to remove an older duplicate), which reverses the loot penalty and re-opens the item, and posts a public correction. |
+| `/mechanic-override <players> <boss>` | Flag mechanic duty for one or more players (comma-separated) after the fact. Their parse on that boss gets replaced with their average + bonus. Defaults to most recent raid, or specify `raid_date:YYYY-MM-DD`. |
 
 ### Audit / Fact-Checking
 
@@ -118,6 +120,7 @@ The bot tracks detailed week-over-week data for every raider including per-boss 
 | `/compare <players>` | Week-over-week breakdown for 1+ raiders (comma-separated). Shows per-boss parses, consumables, utility, interrupts, potions, attendance, loot history, and trend. Add `item_name:` to see assignment score comparison. |
 | `/scores` | Full roster ranked by base score (no item priority applied). |
 | `/attendance` | Per-week attendance grid for all raiders. Shows which weeks each player attended, with pug (P) and manual (M) credit marked. |
+| `/watchlist [player]` | Flag tenured raiders who are underperforming or not improving (low/declining parse, weak/inconsistent utility). Add `player_name:` for a copy-paste DM-ready performance review for one raider. |
 | `/loot-history <player>` | What a player has received and their active loot penalty with decay timers. |
 
 ### Administration
@@ -132,8 +135,9 @@ The bot tracks detailed week-over-week data for every raider including per-boss 
 
 ### Example Workflow
 
-1. After raid, run `/parse-log` with the WCL link and click Import
-2. If anyone had mechanic duty, run `/mechanic-override players:Name1,Name2 boss:Magtheridon`
+1. After raid, run `/parse-log` with the WCL link. Set mechanic duty for the relevant bosses (or click **No Overrides**), then click Import
+2. Missed mechanic duty at import? Add it later with `/mechanic-override players:Name1,Name2 boss:Magtheridon`
 3. When an LC item drops, run `/assign item_name:Dragonspine Trophy` to see the top 5
 4. If someone questions the ranking, run `/compare players:Player1,Player2 item_name:Dragonspine Trophy` to show the full breakdown
 5. After the LC decision, run `/award player_name:Winner item_name:Dragonspine Trophy`
+6. Awarded the wrong person? `/unaward player_name:Winner item_name:Dragonspine Trophy` reverses it
