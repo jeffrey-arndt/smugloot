@@ -89,7 +89,7 @@ async def save_raid_to_db(db: Database, raid_data, group_id: int, wcl_player_map
 
         # Compute utility sub-scores
         cons = check_consumables(player.aura_ids, player.has_weapon_enchant)
-        cls_util, _ = check_class_utility(player.cast_ids, player.player_class)
+        cls_util, _ = check_class_utility(player.cast_ids, player.player_class, player.spec)
         int_score, _ = check_interrupts(player.interrupts, player.player_class)
         pot_score, _ = check_potions(player.potion_count, kill_durations)
         util_total = cons.score + cls_util + int_score + pot_score

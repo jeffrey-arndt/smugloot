@@ -67,11 +67,20 @@ def check_consumables(aura_ids: set[int], has_weapon_enchant: bool = False) -> C
 
 # ── Class utility detection ──────────────────────────────────────────────
 
-def check_class_utility(cast_ids: set[int], player_class: str) -> tuple[int, str]:
+def check_class_utility(
+    cast_ids: set[int], player_class: str, spec: str = "",
+) -> tuple[int, str]:
     """Check if a player cast their expected utility spells.
 
     Returns (score, detail_str). Classes with no tracked spells auto-pass.
+
+    Holy priests auto-pass: healing is their core role and they have no
+    distinct trackable utility cast, so — like Mage and Shaman — they get
+    the point automatically rather than always scoring 0/1. (Shadow and
+    Disc priests still earn it via Vampiric Touch / Power Infusion.)
     """
+    if player_class == "Priest" and spec.lower() == "holy":
+        return 1, "N/A"
     expected = config.CLASS_UTILITY_SPELLS.get(player_class, set())
     if not expected:
         return 1, "N/A"
@@ -160,6 +169,7 @@ def score_player(
     has_weapon_enchant: bool = False,
     potion_count: int = 0,
     fight_durations_ms: list[int] | None = None,
+    spec: str = "",
 ) -> PlayerScore:
     """Calculate the full loot priority score for one player.
 
@@ -170,7 +180,7 @@ def score_player(
 
     # Utility sub-scores
     cons = check_consumables(aura_ids, has_weapon_enchant)
-    class_util_score, class_util_detail = check_class_utility(cast_ids, player_class)
+    class_util_score, class_util_detail = check_class_utility(cast_ids, player_class, spec)
     int_score, int_detail = check_interrupts(interrupt_count, player_class)
     pot_score, pot_detail = check_potions(potion_count, fight_durations_ms or [])
     util_pts = cons.score + class_util_score + int_score + pot_score

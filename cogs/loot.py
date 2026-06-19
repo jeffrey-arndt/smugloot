@@ -3,6 +3,7 @@
 /scores   — current player standings
 /assign   — who's in line for an item
 /award    — record a loot drop
+/unaward  — reverse an award made in error
 /loot-history — what has a player received
 /pug-credit — self-report a pug log for attendance credit
 /attendance-credit — officer grants manual attendance credit
@@ -474,6 +475,141 @@ class LootCog(commands.Cog):
             app_commands.Choice(name=f"{row[0]} — {row[1]}", value=row[0])
             for row in rows
         ]
+
+    # ── /unaward ────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="unaward",
+        description="Reverse a loot award made in error (deletes the most recent match)",
+    )
+    @app_commands.describe(
+        raid_group="Raid group the award was recorded under",
+        player_name="Player the item was awarded to",
+        item_name="Item that was awarded in error",
+    )
+    @app_commands.autocomplete(raid_group=raid_group_autocomplete)
+    async def unaward(
+        self, interaction: discord.Interaction,
+        raid_group: str, player_name: str, item_name: str,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        group = await self.bot.db.get_raid_group_by_name(raid_group)
+        if not group:
+            await interaction.followup.send(
+                f"Unknown raid group: **{raid_group}**", ephemeral=True,
+            )
+            return
+
+        player = await self.bot.db.get_player_by_name(player_name)
+        if not player:
+            await interaction.followup.send(
+                f"Player not found: **{player_name}**", ephemeral=True,
+            )
+            return
+
+        awards = await self.bot.db.find_loot_awards(
+            group["id"], player["id"], item_name,
+        )
+        if not awards:
+            await interaction.followup.send(
+                f"No recorded award of **{item_name}** to **{player['name']}** "
+                f"in {raid_group} to reverse.",
+                ephemeral=True,
+            )
+            return
+
+        # Reverse the most recent matching award.
+        target_award = awards[0]
+        deleted = await self.bot.db.delete_loot_history(target_award["id"])
+        if not deleted:
+            await interaction.followup.send(
+                "That award row no longer exists — nothing to reverse.",
+                ephemeral=True,
+            )
+            return
+
+        when = target_award.get("raid_date") or str(target_award.get("awarded_at", ""))[:10]
+        remaining = len(awards) - 1
+
+        # Show updated standing (penalty recomputes live from loot_history).
+        roster = await _build_roster(self.bot.db, group["id"])
+        target = next((p for p in roster if p.player_id == player["id"]), None)
+        penalty_str = (
+            f" Remaining loot penalty: -{target.loot_penalty:.1f}."
+            if target and target.loot_penalty > 0 else
+            " No active loot penalty remains."
+        )
+        dup_note = (
+            f" Note: {remaining} earlier award of this item to this player still "
+            f"on record — run /unaward again to remove another."
+            if remaining > 0 else ""
+        )
+
+        await interaction.followup.send(
+            f"Reversed: removed **{player['name']}**'s **{item_name}** "
+            f"(awarded {raid_group}, raid {when}).{penalty_str}{dup_note}",
+            ephemeral=True,
+        )
+
+        # Mirror the public /award post with a correction.
+        channel = self.bot.get_channel(config.PUBLISH_CHANNEL_ID)
+        if channel:
+            embed = discord.Embed(
+                title="Loot Award Reversed",
+                description=f"**{player['name']}**'s **{item_name}** was reversed (recorded in error).",
+                color=0x808080,
+            )
+            embed.set_footer(text=f"Corrected by {interaction.user.display_name} | {raid_group} | {when}")
+            await channel.send(embed=embed)
+
+    @unaward.autocomplete("player_name")
+    async def unaward_player_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        cursor = await self.bot.db.db.execute(
+            "SELECT name FROM players WHERE name LIKE ? COLLATE NOCASE ORDER BY name LIMIT 25",
+            (f"%{current}%",),
+        )
+        rows = await cursor.fetchall()
+        return [app_commands.Choice(name=row[0], value=row[0]) for row in rows]
+
+    @unaward.autocomplete("item_name")
+    async def unaward_item_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        # Scope suggestions to items this player has actually received, so
+        # officers only see reversible awards.
+        group_name = getattr(interaction.namespace, "raid_group", None)
+        player_name = getattr(interaction.namespace, "player_name", None)
+        if not player_name:
+            return []
+
+        group = await self.bot.db.get_raid_group_by_name(group_name) if group_name else None
+        player = await self.bot.db.get_player_by_name(player_name)
+        if not player:
+            return []
+
+        if group:
+            cursor = await self.bot.db.db.execute(
+                """
+                SELECT DISTINCT item_name FROM loot_history
+                WHERE group_id = ? AND player_id = ? AND item_name LIKE ? COLLATE NOCASE
+                ORDER BY item_name LIMIT 25
+                """,
+                (group["id"], player["id"], f"%{current}%"),
+            )
+        else:
+            cursor = await self.bot.db.db.execute(
+                """
+                SELECT DISTINCT item_name FROM loot_history
+                WHERE player_id = ? AND item_name LIKE ? COLLATE NOCASE
+                ORDER BY item_name LIMIT 25
+                """,
+                (player["id"], f"%{current}%"),
+            )
+        rows = await cursor.fetchall()
+        return [app_commands.Choice(name=row[0], value=row[0]) for row in rows]
 
     # ── /loot-history ───────────────────────────────────────────────────
 

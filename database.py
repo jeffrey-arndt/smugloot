@@ -526,6 +526,48 @@ class Database:
             await self.db.execute("DELETE FROM item_priorities WHERE phase = ?", (phase,))
         await self.db.commit()
 
+    # --- Scoring window (group-scoped) ---
+    #
+    # The window is "the last N raids", expressed as the N most recent
+    # lockout-week buckets that actually contain a raid — NOT a rolling
+    # calendar-day span. A flat `raid_date >= date('now','-28 days')` lookback
+    # bleeds a partial 5th week whenever "now" lands mid-week, which made a
+    # raider present 4 of 5 weeks score identically to one present all 4. These
+    # two helpers anchor every windowed query to real raid weeks instead.
+
+    async def _recent_raid_weeks(self, group_id: int, weeks: int) -> list[str]:
+        """The N most recent lockout-week buckets that contain a raid for this
+        group, newest first. Empty if the group has never raided."""
+        cursor = await self.db.execute(
+            """
+            SELECT DISTINCT strftime('%Y-%W', raid_date, '-1 day') as week
+            FROM raids WHERE group_id = ?
+            ORDER BY week DESC LIMIT ?
+            """,
+            (group_id, weeks),
+        )
+        return [row["week"] for row in await cursor.fetchall()]
+
+    async def _window_start(self, group_id: int, weeks: int) -> str | None:
+        """Earliest raid_date inside the N most recent raid weeks, or None if the
+        group has no raids. Use as a `raid_date >= ?` lower bound — it captures
+        exactly those N week buckets and nothing older. A None bound makes
+        `raid_date >= NULL` match no rows, i.e. an empty window."""
+        weeks_list = await self._recent_raid_weeks(group_id, weeks)
+        if not weeks_list:
+            return None
+        placeholders = ",".join("?" * len(weeks_list))
+        cursor = await self.db.execute(
+            f"""
+            SELECT MIN(raid_date) as start FROM raids
+            WHERE group_id = ?
+              AND strftime('%Y-%W', raid_date, '-1 day') IN ({placeholders})
+            """,
+            (group_id, *weeks_list),
+        )
+        row = await cursor.fetchone()
+        return row["start"] if row else None
+
     # --- Attendance by week (group-scoped) ---
 
     async def get_weekly_attendance(self, player_id: int, group_id: int, weeks: int = 4) -> int:
@@ -549,6 +591,11 @@ class Database:
         char_ids = [r["id"] for r in await cursor.fetchall()]
         placeholders = ",".join("?" * len(char_ids))
 
+        week_keys = await self._recent_raid_weeks(group_id, weeks)
+        if not week_keys:
+            return 0
+        wk_ph = ",".join("?" * len(week_keys))
+
         cursor = await self.db.execute(
             f"""
             SELECT COUNT(DISTINCT week) as weeks_present FROM (
@@ -556,15 +603,15 @@ class Database:
                 FROM attendance a
                 JOIN raids r ON r.id = a.raid_id
                 WHERE a.player_id IN ({placeholders}) AND r.group_id = ?
-                  AND r.raid_date >= date('now', ? || ' days')
+                  AND strftime('%Y-%W', r.raid_date, '-1 day') IN ({wk_ph})
                 UNION
                 SELECT ac.week
                 FROM attendance_credit ac
                 WHERE ac.player_id IN ({placeholders}) AND ac.group_id = ?
-                  AND ac.created_at >= date('now', ? || ' days')
+                  AND ac.week IN ({wk_ph})
             )
             """,
-            (*char_ids, group_id, -weeks * 7, *char_ids, group_id, -weeks * 7),
+            (*char_ids, group_id, *week_keys, *char_ids, group_id, *week_keys),
         )
         row = await cursor.fetchone()
         return min(row["weeks_present"], weeks) if row else 0
@@ -575,24 +622,29 @@ class Database:
         Merges alts into mains — if any linked character attended, the raider gets credit.
         Returns {raider_id: weeks_present}.
         """
+        week_keys = await self._recent_raid_weeks(group_id, weeks)
+        if not week_keys:
+            return {}
+        wk_ph = ",".join("?" * len(week_keys))
+
         cursor = await self.db.execute(
-            """
+            f"""
             SELECT raider_id, COUNT(DISTINCT week) as weeks_present FROM (
                 SELECT COALESCE(p.main_id, p.id) as raider_id,
                        strftime('%Y-%W', r.raid_date, '-1 day') as week
                 FROM attendance a
                 JOIN players p ON p.id = a.player_id
                 JOIN raids r ON r.id = a.raid_id
-                WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
+                WHERE r.group_id = ? AND strftime('%Y-%W', r.raid_date, '-1 day') IN ({wk_ph})
                 UNION
                 SELECT COALESCE(p.main_id, p.id) as raider_id, ac.week
                 FROM attendance_credit ac
                 JOIN players p ON p.id = ac.player_id
-                WHERE ac.group_id = ? AND ac.created_at >= date('now', ? || ' days')
+                WHERE ac.group_id = ? AND ac.week IN ({wk_ph})
             )
             GROUP BY raider_id
             """,
-            (group_id, -weeks * 7, group_id, -weeks * 7),
+            (group_id, *week_keys, group_id, *week_keys),
         )
         return {row["raider_id"]: min(row["weeks_present"], weeks) for row in await cursor.fetchall()}
 
@@ -608,17 +660,22 @@ class Database:
 
         week_str is ISO format e.g. "2025-10".
         """
+        week_keys = await self._recent_raid_weeks(group_id, weeks)
+        if not week_keys:
+            return {}
+        wk_ph = ",".join("?" * len(week_keys))
+
         # Raid attendance
         cursor = await self.db.execute(
-            """
+            f"""
             SELECT COALESCE(p.main_id, p.id) as raider_id,
                    strftime('%Y-%W', r.raid_date, '-1 day') as week
             FROM attendance a
             JOIN players p ON p.id = a.player_id
             JOIN raids r ON r.id = a.raid_id
-            WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
+            WHERE r.group_id = ? AND strftime('%Y-%W', r.raid_date, '-1 day') IN ({wk_ph})
             """,
-            (group_id, -weeks * 7),
+            (group_id, *week_keys),
         )
         result: dict[int, dict[str, str]] = {}
         for row in await cursor.fetchall():
@@ -626,13 +683,13 @@ class Database:
 
         # Attendance credits (pug/manual) — only if not already marked as raid
         cursor = await self.db.execute(
-            """
+            f"""
             SELECT COALESCE(p.main_id, p.id) as raider_id, ac.week, ac.credit_type
             FROM attendance_credit ac
             JOIN players p ON p.id = ac.player_id
-            WHERE ac.group_id = ? AND ac.created_at >= date('now', ? || ' days')
+            WHERE ac.group_id = ? AND ac.week IN ({wk_ph})
             """,
-            (group_id, -weeks * 7),
+            (group_id, *week_keys),
         )
         for row in await cursor.fetchall():
             raider_weeks = result.setdefault(row["raider_id"], {})
@@ -642,29 +699,15 @@ class Database:
         return result
 
     async def get_recent_weeks(self, group_id: int, weeks: int = 4) -> list[str]:
-        """Get the distinct week strings for the last N weeks of raids."""
-        cursor = await self.db.execute(
-            """
-            SELECT DISTINCT strftime('%Y-%W', r.raid_date, '-1 day') as week
-            FROM raids r
-            WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
-            ORDER BY week DESC
-            """,
-            (group_id, -weeks * 7),
-        )
-        weeks_list = [row["week"] for row in await cursor.fetchall()]
-        # If we have fewer raid weeks than the window, pad with calendar weeks
-        if len(weeks_list) < weeks:
-            import config as cfg
-            from datetime import datetime, timedelta, timezone
-            now = datetime.now(timezone.utc)
-            for i in range(weeks):
-                dt = now - timedelta(weeks=i)
-                wk = cfg.lockout_week(dt)
-                if wk not in weeks_list:
-                    weeks_list.append(wk)
-            weeks_list = sorted(set(weeks_list), reverse=True)[:weeks]
-        return weeks_list
+        """Get the week strings for the last N raids (newest first).
+
+        These are the N most recent lockout-week buckets that actually contain
+        a raid — the same window every scoring query uses. We deliberately do
+        NOT pad to N with calendar weeks: an empty current week (no raid yet)
+        is exactly the phantom-5th-week column that made 4/5 read like 4/4.
+        Callers that want oldest-first sort the result themselves.
+        """
+        return await self._recent_raid_weeks(group_id, weeks)
 
     # --- Composite score queries (group-scoped) ---
 
@@ -679,17 +722,19 @@ class Database:
         """
         import config as cfg
 
+        start = await self._window_start(group_id, weeks)
+
         # Get all per-boss parses in the window
         cursor = await self.db.execute(
             """
             SELECT bp.player_id, bp.boss_name, bp.parse_pct, bp.raid_id
             FROM boss_performance bp
             JOIN raids r ON r.id = bp.raid_id
-            WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
+            WHERE r.group_id = ? AND r.raid_date >= ?
               AND bp.parse_pct > 0
             ORDER BY bp.player_id, bp.boss_name, r.raid_date DESC
             """,
-            (group_id, -weeks * 7),
+            (group_id, start),
         )
         rows = [dict(r) for r in await cursor.fetchall()]
 
@@ -699,9 +744,9 @@ class Database:
             SELECT mo.player_id, mo.boss_name, mo.raid_id
             FROM mechanic_overrides mo
             JOIN raids r ON r.id = mo.raid_id
-            WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
+            WHERE r.group_id = ? AND r.raid_date >= ?
             """,
-            (group_id, -weeks * 7),
+            (group_id, start),
         )
         overrides = {(r["player_id"], r["boss_name"], r["raid_id"]) for r in await cursor.fetchall()}
 
@@ -759,12 +804,12 @@ class Database:
             SELECT rp.player_id, AVG(rp.parse_pct) as avg_parse
             FROM raid_performance rp
             JOIN raids r ON r.id = rp.raid_id
-            WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
+            WHERE r.group_id = ? AND r.raid_date >= ?
               AND rp.parse_pct > 0
               AND rp.player_id NOT IN ({})
             GROUP BY rp.player_id
             """.format(",".join("?" * len(result)) if result else "NULL"),
-            (group_id, -weeks * 7, *result.keys()),
+            (group_id, start, *result.keys()),
         )
         for row in await cursor.fetchall():
             result[row["player_id"]] = round(row["avg_parse"], 1)
@@ -773,15 +818,16 @@ class Database:
 
     async def get_rolling_utility_averages(self, group_id: int, weeks: int = 4) -> dict[int, float]:
         """Returns {player_id: avg_utility}. Per-character, NOT merged across alts."""
+        start = await self._window_start(group_id, weeks)
         cursor = await self.db.execute(
             """
             SELECT up.player_id, AVG(up.utility_total) as avg_util
             FROM utility_performance up
             JOIN raids r ON r.id = up.raid_id
-            WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
+            WHERE r.group_id = ? AND r.raid_date >= ?
             GROUP BY up.player_id
             """,
-            (group_id, -weeks * 7),
+            (group_id, start),
         )
         return {row["player_id"]: round(row["avg_util"], 1) for row in await cursor.fetchall()}
 
@@ -789,17 +835,18 @@ class Database:
         self, group_id: int, weeks: int = 4,
     ) -> dict[int, dict[str, float]]:
         """Returns {player_id: {week_str: avg_parse_pct}} from raid_performance."""
+        start = await self._window_start(group_id, weeks)
         cursor = await self.db.execute(
             """
             SELECT rp.player_id, strftime('%Y-%W', r.raid_date, '-1 day') as week,
                    AVG(rp.parse_pct) as avg_parse
             FROM raid_performance rp
             JOIN raids r ON r.id = rp.raid_id
-            WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
+            WHERE r.group_id = ? AND r.raid_date >= ?
               AND rp.parse_pct > 0
             GROUP BY rp.player_id, week
             """,
-            (group_id, -weeks * 7),
+            (group_id, start),
         )
         result: dict[int, dict[str, float]] = {}
         for row in await cursor.fetchall():
@@ -810,16 +857,17 @@ class Database:
         self, group_id: int, weeks: int = 4,
     ) -> dict[int, dict[str, float]]:
         """Returns {player_id: {week_str: avg_utility}} from utility_performance."""
+        start = await self._window_start(group_id, weeks)
         cursor = await self.db.execute(
             """
             SELECT up.player_id, strftime('%Y-%W', r.raid_date, '-1 day') as week,
                    AVG(up.utility_total) as avg_util
             FROM utility_performance up
             JOIN raids r ON r.id = up.raid_id
-            WHERE r.group_id = ? AND r.raid_date >= date('now', ? || ' days')
+            WHERE r.group_id = ? AND r.raid_date >= ?
             GROUP BY up.player_id, week
             """,
-            (group_id, -weeks * 7),
+            (group_id, start),
         )
         result: dict[int, dict[str, float]] = {}
         for row in await cursor.fetchall():
@@ -840,10 +888,10 @@ class Database:
             FROM boss_performance bp
             JOIN raids r ON r.id = bp.raid_id
             WHERE bp.player_id = ? AND r.group_id = ?
-              AND r.raid_date >= date('now', ? || ' days')
+              AND r.raid_date >= ?
             ORDER BY r.raid_date, bp.boss_name
             """,
-            (player_id, group_id, -weeks * 7),
+            (player_id, group_id, await self._window_start(group_id, weeks)),
         )
         return [dict(r) for r in await cursor.fetchall()]
 
@@ -863,10 +911,10 @@ class Database:
             FROM utility_performance up
             JOIN raids r ON r.id = up.raid_id
             WHERE up.player_id = ? AND r.group_id = ?
-              AND r.raid_date >= date('now', ? || ' days')
+              AND r.raid_date >= ?
             ORDER BY r.raid_date
             """,
-            (player_id, group_id, -weeks * 7),
+            (player_id, group_id, await self._window_start(group_id, weeks)),
         )
         return [dict(r) for r in await cursor.fetchall()]
 
@@ -884,10 +932,10 @@ class Database:
             FROM raid_performance rp
             JOIN raids r ON r.id = rp.raid_id
             WHERE rp.player_id = ? AND r.group_id = ?
-              AND r.raid_date >= date('now', ? || ' days')
+              AND r.raid_date >= ?
             ORDER BY r.raid_date
             """,
-            (player_id, group_id, -weeks * 7),
+            (player_id, group_id, await self._window_start(group_id, weeks)),
         )
         return [dict(r) for r in await cursor.fetchall()]
 
@@ -946,6 +994,40 @@ class Database:
             )
         await self.db.commit()
         return cursor.lastrowid
+
+    async def find_loot_awards(
+        self, group_id: int, player_id: int, item_name: str,
+    ) -> list[dict]:
+        """Find a player's awards of a given item in a group, newest first.
+
+        Used by /unaward to locate the row to reverse. Matches item_name
+        case-insensitively so it lines up with how /award recorded it.
+        """
+        cursor = await self.db.execute(
+            """
+            SELECT lh.id, lh.item_name, lh.awarded_at, lh.notes,
+                   r.raid_date, r.title as raid_title
+            FROM loot_history lh
+            LEFT JOIN raids r ON r.id = lh.raid_id
+            WHERE lh.group_id = ? AND lh.player_id = ?
+              AND lh.item_name = ? COLLATE NOCASE
+            ORDER BY lh.awarded_at DESC, lh.id DESC
+            """,
+            (group_id, player_id, item_name),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def delete_loot_history(self, loot_id: int) -> bool:
+        """Delete a single loot_history row by id. Returns True if a row was removed.
+
+        Removing the row reverses both the loot penalty (computed live from
+        loot_history award ages) and the once-per-item exclusion in /assign.
+        """
+        cursor = await self.db.execute(
+            "DELETE FROM loot_history WHERE id = ?", (loot_id,),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
 
     async def get_loot_counts(self, group_id: int, weeks: int = 4) -> dict[int, int]:
         """Returns {player_id: count}. Per-character, not merged."""

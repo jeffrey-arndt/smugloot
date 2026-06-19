@@ -33,12 +33,12 @@ class MechanicOverrideModal(discord.ui.Modal, title="Mechanic Overrides"):
         prefill = "\n".join(lines)
 
         self.overrides_input = discord.ui.TextInput(
-            label="Per-boss overrides (one line per boss)",
+            label="Per-boss overrides (blank = no overrides)",
             style=discord.TextStyle.paragraph,
             default=prefill,
-            required=True,
+            required=False,
             max_length=4000,
-            placeholder="Magtheridon: Bob,Alice\nKarathress: none",
+            placeholder="Only list bosses that need overrides:\nMagtheridon: Bob,Alice",
         )
         self.add_item(self.overrides_input)
 
@@ -68,11 +68,8 @@ class MechanicOverrideModal(discord.ui.Modal, title="Mechanic Overrides"):
                 continue  # silently ignore unknown boss lines
             remaining.discard(canonical)
 
-            if not value:
-                errors.append(f"**{canonical}**: line is blank — type `none` if no overrides")
-                continue
-            if value.lower() == "none":
-                parsed[canonical] = []
+            if not value or value.lower() == "none":
+                parsed[canonical] = []   # blank or "none" → no overrides for this boss
                 continue
 
             names = [n.strip() for n in value.split(",") if n.strip()]
@@ -85,8 +82,10 @@ class MechanicOverrideModal(discord.ui.Modal, title="Mechanic Overrides"):
                     errors.append(f"**{canonical}**: unknown player `{n}`")
             parsed[canonical] = resolved
 
+        # Bosses left unmentioned default to no overrides — no need to type
+        # `none` for every boss.
         for boss in remaining:
-            errors.append(f"**{boss}**: missing — include `{boss}: <names>` or `{boss}: none`")
+            parsed.setdefault(boss, [])
 
         if errors:
             await interaction.response.send_message(
@@ -131,7 +130,10 @@ class ApprovePublishView(discord.ui.View):
     def build_summary(self) -> str:
         extra = ""
         if self.overrides is None:
-            extra = "\n\nMechanic overrides: **not yet set** — click *Set Mechanic Overrides* to continue."
+            extra = (
+                "\n\nMechanic overrides: **not yet set** — click *Set Mechanic "
+                "Overrides* to enter them, or *No Overrides* to skip in one click."
+            )
         else:
             lines = []
             for boss, names in self.overrides.items():
@@ -147,6 +149,16 @@ class ApprovePublishView(discord.ui.View):
         kills = [b for b in self.raid_data.bosses if b.kill]
         modal = MechanicOverrideModal(self, [b.name for b in kills])
         await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="No Overrides", style=discord.ButtonStyle.secondary)
+    async def skip_overrides(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """One-click skip: mark every killed boss as having no overrides."""
+        kills = [b for b in self.raid_data.bosses if b.kill]
+        self.overrides = {b.name: [] for b in kills}
+        self.refresh_buttons()
+        await interaction.response.edit_message(
+            content=self.build_summary(), view=self,
+        )
 
     @discord.ui.button(
         label="Import (set overrides first)",
@@ -253,7 +265,7 @@ class ApprovePublishView(discord.ui.View):
             )
 
             cons = check_consumables(player.aura_ids, player.has_weapon_enchant)
-            cls_util, _ = check_class_utility(player.cast_ids, player.player_class)
+            cls_util, _ = check_class_utility(player.cast_ids, player.player_class, player.spec)
             int_score, _ = check_interrupts(player.interrupts, player.player_class)
             pot_score, _ = check_potions(player.potion_count, kill_durations)
             util_total = cons.score + cls_util + int_score + pot_score
