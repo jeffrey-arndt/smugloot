@@ -59,6 +59,50 @@ async def _build_roster(db, group_id):
     return roster
 
 
+def _chunk_lines(text: str, limit: int = 3900) -> list[str]:
+    """Split text into chunks under `limit` chars, breaking only on newlines."""
+    chunks: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for line in text.split("\n"):
+        add = len(line) + 1
+        if cur and cur_len + add > limit:
+            chunks.append("\n".join(cur))
+            cur, cur_len = [], 0
+        cur.append(line)
+        cur_len += add
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks
+
+
+class LootListModal(discord.ui.Modal, title="Loot Council List"):
+    """Paste a week's item list (raid headers OK) to get top-3 candidates each."""
+
+    items = discord.ui.TextInput(
+        label="Items — one per line, raid headers OK",
+        style=discord.TextStyle.paragraph,
+        placeholder=(
+            "SSC\n"
+            "Shoulderpads of the Stranger\n"
+            "Fang of the Leviathan\n"
+            "TK\n"
+            "Ashes of Alar\n"
+            "..."
+        ),
+        required=True,
+        max_length=4000,
+    )
+
+    def __init__(self, cog, group):
+        super().__init__()
+        self.cog = cog
+        self.group = group
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog._run_loot_list(interaction, self.group, str(self.items))
+
+
 async def raid_group_autocomplete(
     interaction: discord.Interaction, current: str
 ) -> list[app_commands.Choice[str]]:
@@ -345,6 +389,105 @@ class LootCog(commands.Cog):
         )
         rows = await cursor.fetchall()
         return [app_commands.Choice(name=row[0], value=row[0]) for row in rows]
+
+    # ── /loot-list ──────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="loot-list",
+        description="Top 3 candidates for each item in a pasted list",
+    )
+    @app_commands.describe(raid_group="Raid group (e.g. Sunday, Tuesday, Wednesday)")
+    @app_commands.autocomplete(raid_group=raid_group_autocomplete)
+    async def loot_list(self, interaction: discord.Interaction, raid_group: str):
+        group = await self.bot.db.get_raid_group_by_name(raid_group)
+        if not group:
+            await interaction.response.send_message(
+                f"Unknown raid group: **{raid_group}**", ephemeral=True,
+            )
+            return
+        # Modal lets officers paste a multi-line list (slash params are single-line).
+        await interaction.response.send_modal(LootListModal(self, group))
+
+    async def _run_loot_list(self, interaction: discord.Interaction, group, raw_text: str):
+        await interaction.response.defer(ephemeral=True)
+
+        # Known raid codes (SSC, TK, ...) act as section headers — skip, don't look up.
+        cursor = await self.bot.db.db.execute(
+            "SELECT DISTINCT raid FROM item_priorities WHERE raid != ''"
+        )
+        raid_codes = {r[0].upper() for r in await cursor.fetchall()}
+
+        roster = await _build_roster(self.bot.db, group["id"])
+        if not roster:
+            await interaction.followup.send("No player data yet.", ephemeral=True)
+            return
+
+        received_items = await self.bot.db.get_received_items(group["id"])
+        week_keys = sorted(
+            await self.bot.db.get_recent_weeks(group["id"], weeks=config.ATTENDANCE_WEEKS)
+        )
+
+        found: list[dict] = []
+        not_found: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_text.splitlines():
+            line = raw.strip()
+            if not line or line.upper() in raid_codes:
+                continue  # blank or raid header
+            key = line.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            item = await self.bot.db.get_item_priority(line)
+            if item:
+                found.append(item)
+            else:
+                not_found.append(line)
+
+        if not found:
+            msg = "No matching items found. Make sure names match the priority sheet exactly."
+            if not_found:
+                msg += "\n\nUnrecognized:\n" + "\n".join(f"• {n}" for n in not_found)
+            await interaction.followup.send(msg[:2000], ephemeral=True)
+            return
+
+        assignments = generate_assignments(found, roster, received_items)
+        text = format_assignments(assignments, week_keys=week_keys, max_players=3)
+        raid_count = await self.bot.db.get_raid_count(group["id"])
+
+        header = discord.Embed(
+            title=f"Loot Council List — {group['name']}",
+            description=(
+                f"Top 3 candidates for **{len(found)}** item(s), "
+                f"based on {raid_count} raid(s)."
+            ),
+            color=discord.Color.gold(),
+        )
+        if not_found:
+            # Suggest the closest sheet name for each miss so officers can fix the list.
+            import difflib
+            cur = await self.bot.db.db.execute(
+                "SELECT DISTINCT item_name FROM item_priorities WHERE priority_type = 'chain'"
+            )
+            all_names = [r[0] for r in await cur.fetchall()]
+            lines = []
+            for n in not_found:
+                match = difflib.get_close_matches(n, all_names, n=1, cutoff=0.6)
+                lines.append(f"• {n}" + (f"  →  did you mean **{match[0]}**?" if match else ""))
+            header.add_field(
+                name="⚠️ Not found (check spelling vs. priority sheet)",
+                value="\n".join(lines)[:1024],
+                inline=False,
+            )
+        await interaction.followup.send(embed=header, ephemeral=True)
+
+        # Body can exceed Discord's 4096-char embed limit — split on item/line bounds.
+        for chunk in _chunk_lines(text, limit=3900):
+            embed = discord.Embed(
+                description=f"```\n{chunk}\n```",
+                color=discord.Color.gold(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /award ──────────────────────────────────────────────────────────
 
